@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Изменения в расписании</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1b1d21;--mut:#6b7280;--ac:#2563eb;--bd:#d9dce1;--red:#dc2626}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1e2126;--tx:#eceef1;--mut:#9aa1ab;--bd:#343941}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,sans-serif;padding:12px}
+main{max-width:520px;margin:0 auto;display:grid;gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;display:grid;gap:10px}
+h1{font-size:20px;margin:0}h2{font-size:15px;margin:0;color:var(--mut)}
+input,select,button{font:inherit;padding:10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);width:100%}
+button{cursor:pointer;background:var(--ac);color:#fff;border:0;font-weight:600}
+button.sec{background:var(--bg);color:var(--tx);border:1px solid var(--bd)}
+button.ok{background:#16a34a}
+.row{display:flex;gap:8px}.row>*{flex:1}
+.tabs button{background:var(--bg);color:var(--tx);border:1px solid var(--bd)}
+.tabs button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.hide{display:none}
+pre{margin:0;white-space:pre-wrap;font:inherit}
+.ch{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:14px}
+.ch button{width:auto;background:none;color:var(--red);padding:4px 8px}
+#msg{font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<h1>📅 Изменения в расписании</h1>
+
+<div class="card">
+  <h2>День</h2>
+  <input type="date" id="date">
+</div>
+
+<div class="card">
+  <h2>Новое изменение</h2>
+  <div class="row tabs" id="tabs">
+    <button data-t="sub" class="on">Замена</button>
+    <button data-t="room">Замена ауд.</button>
+    <button data-t="vpr">ВПР</button>
+  </div>
+  <select id="pair"></select>
+  <div id="subBox"><select id="subj"></select><input id="subjX" class="hide" placeholder="Название предмета"></div>
+  <div id="roomBox"><select id="room"></select><input id="roomX" class="hide" placeholder="Номер аудитории"></div>
+  <button id="add">➕ Добавить</button>
+</div>
+
+<div class="card">
+  <h2>Так уйдёт в группу</h2>
+  <pre id="prev"></pre>
+  <div id="list"></div>
+</div>
+
+<div class="card">
+  <input type="password" id="key" placeholder="Ключ доступа">
+  <button id="send" class="ok">✅ Подтвердить и отправить</button>
+  <div id="msg"></div>
+</div>
+</main>
+
+<script>
+// ===== НАСТРОЙКИ =====
+const CFG = { WORKER_URL: "https://ИМЯ.ПОДДОМЕН.workers.dev", WEEK1: "2026-08-31" };
+// Расписание: неделя -> пн..сб -> 5 пар ("" = нет пары)
+const SCHEDULE = {
+  1: [
+    ["","Физика 1 гр. (ауд. 204)","ОБЗР (ауд. 118)","Обществознание (ауд. 223)","Физика 2 гр. (ауд. 204)"],
+    ["","Информатика 1 гр. (ауд. 309)","Биология (ауд. 620)","Иностранный язык (ауд. 227, 225)","Информатика 2 гр. (ауд. 309)"],
+    ["Литература (ауд. 227)","Математика (ауд. 619)","Математика (ауд. 619)","История (ауд. 223)",""],
+    ["Математика (ауд. 605)","Химия (ауд. 804)","Физика (ауд. 204)","Физкультура",""],
+    ["","Математика (ауд. 605)","История (ауд. 223)","Литература (ауд. 227)","Русский язык (ауд. 227)"],
+    []
+  ],
+  2: [
+    ["","","Физика (ауд. 204)","История (ауд. 223)","ОБЗР (ауд. 118)"],
+    ["","Информатика (ауд. 309)","Биология (ауд. 620)","Иностранный язык (ауд. 405, 225)",""],
+    ["Информатика (ауд. 309)","ОБЗР (ауд. 118)","Математика (ауд. 808)","Физика (ауд. 204)","Информатика (ауд. 309)"],
+    ["Химия лабораторная Практика (ауд. 804)","Физкультура","Русский язык (ауд. 227)","Литература (ауд. 227)",""],
+    ["Обществознание (ауд. 223)","История (ауд. 223)","Математика (ауд. 605)","Математика (ауд. 605)",""],
+    []
+  ]
+};
+const DAYS = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"];
+// ======================
+
+const $ = s => document.querySelector(s);
+const esc = s => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const strip = s => s.replace(/\s*\(ауд\.[^)]*\)/, "").trim();
+
+// списки предметов и аудиторий берутся из расписания
+const subs = new Set(), rooms = new Set();
+for (const w of Object.values(SCHEDULE)) for (const d of w) for (const p of d) {
+  if (!p) continue;
+  subs.add(strip(p).replace(/\s+\d\s*гр\./, ""));
+  const m = p.match(/ауд\.\s*([\d,\s]+)/);
+  if (m) m[1].split(",").forEach(r => r.trim() && rooms.add(r.trim()));
+}
+const SUBJ = [...subs].sort();
+const ROOM = [...rooms].sort((a, b) => a.length - b.length || a.localeCompare(b));
+
+let type = "sub", changes = [];
+
+function fill(sel, items, extra) {
+  sel.innerHTML = items.map(x => `<option>${esc(x)}</option>`).join("") + extra;
+}
+function fillRoom() {
+  fill($("#room"), ROOM, (type === "sub" ? '<option value="">Без аудитории</option>' : "") + '<option value="__x">✏️ Другая…</option>');
+  $("#roomX").classList.add("hide");
+}
+$("#pair").innerHTML = [1,2,3,4,5].map(n => `<option value="${n}">Пара ${n}</option>`).join("");
+fill($("#subj"), SUBJ, '<option value="__x">✏️ Другой…</option>');
+fillRoom();
+$("#subj").onchange = e => $("#subjX").classList.toggle("hide", e.target.value !== "__x");
+$("#room").onchange = e => $("#roomX").classList.toggle("hide", e.target.value !== "__x");
+
+function setType(t) {
+  type = t;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  $("#subBox").classList.toggle("hide", t === "room");
+  fillRoom();
+}
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => setType(b.dataset.t));
+
+function dayInfo() {
+  const v = $("#date").value;
+  const d = new Date(v + "T00:00:00");
+  const diff = Math.floor((d - new Date(CFG.WEEK1 + "T00:00:00")) / 864e5);
+  const week = ((Math.floor(diff / 7) % 2) + 2) % 2 + 1;
+  const wd = (d.getDay() + 6) % 7;
+  const base = ((SCHEDULE[week][wd] || []).concat(["","","","",""])).slice(0, 5);
+  const [y, m, dd] = v.split("-");
+  return { head: `📅 <b>${dd}.${m}.${y}</b> · неделя ${week} · ${DAYS[wd]}`, base };
+}
+
+function build() {
+  const { head, base } = dayInfo();
+  const res = base.map(x => x || "-");
+  let vFrom = null;
+  for (const c of changes) {
+    const i = c.pair - 1;
+    if (c.type === "sub") res[i] = `${c.subject} (замена${c.room ? ", ауд. " + c.room : ""})`;
+    if (c.type === "room") res[i] = `${strip(base[i]) || "?"} — ауд. ${c.room} (замена ауд.)`;
+    if (c.type === "vpr") { res[i] = `ВПР: ${c.subject} (ауд. ${c.room})`; vFrom = vFrom === null ? i : Math.min(vFrom, i); }
+  }
+  if (vFrom !== null) for (let j = vFrom + 1; j < 5; j++) res[j] = "-";
+  return head + "\n\n" + res.map((t, i) => `${i + 1}. ${esc(t)}`).join("\n");
+}
+
+function render() {
+  $("#prev").innerHTML = build();
+  const names = { sub: "Замена", room: "Замена ауд.", vpr: "ВПР" };
+  $("#list").innerHTML = changes.map((c, i) =>
+    `<div class="ch"><span>${names[c.type]} · пара ${c.pair}</span><button data-i="${i}">🗑 Убрать</button></div>`).join("");
+  document.querySelectorAll("#list button").forEach(b => b.onclick = () => { changes.splice(+b.dataset.i, 1); render(); });
+}
+
+$("#add").onclick = () => {
+  const pick = (sel, x) => $(sel).value === "__x" ? $(x).value.trim() : $(sel).value;
+  const c = { type, pair: +$("#pair").value, subject: "", room: "" };
+  if (type !== "room") c.subject = pick("#subj", "#subjX");
+  c.room = pick("#room", "#roomX");
+  if (type !== "room" && !c.subject) return alert("Укажи предмет");
+  if (type !== "sub" && !c.room) return alert("Укажи аудиторию");
+  changes.push(c);
+  $("#subjX").value = $("#roomX").value = "";
+  render();
+};
+
+$("#date").onchange = () => { changes = []; render(); };
+$("#date").value = new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+try { $("#key").value = localStorage.getItem("key") || ""; } catch (e) {}
+
+$("#send").onclick = async () => {
+  if (!changes.length) return alert("Сначала добавь хотя бы одно изменение");
+  if (!confirm("Отправить в группу?")) return;
+  const key = $("#key").value;
+  try { localStorage.setItem("key", key); } catch (e) {}
+  $("#msg").textContent = "Отправляю…";
+  try {
+    const r = await fetch(CFG.WORKER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, text: "🔔 <b>Изменения в расписании</b>\n\n" + build() })
+    });
+    const j = await r.json();
+    $("#msg").textContent = j.ok ? "✅ Отправлено!" : "❌ Ошибка: " + (j.error || r.status);
+    if (j.ok) { changes = []; render(); }
+  } catch (e) { $("#msg").textContent = "❌ Нет связи с Worker (проверь WORKER_URL)"; }
+};
+render();
+</script>
+</body>
+</html>
